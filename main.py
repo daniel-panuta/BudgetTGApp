@@ -6,6 +6,8 @@ import logging
 import os
 import parser
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
@@ -20,6 +22,13 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=getattr(logging, LOG_LEVEL)
 )
+
+# Reduce noise from HTTP and Telegram internals
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("telegram.ext").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -303,10 +312,35 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         db.close_connection(conn)
 
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/' or self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_health_server(port=8080):
+    server = HTTPServer(('0.0.0.0', port), HealthHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info(f"Health server started on http://0.0.0.0:{port}")
+    return server
+
+
 def main():
     if not BOT_TOKEN:
         logger.error("Missing BOT_TOKEN variable!")
         return
+
+    start_health_server(8080)
 
     app = Application.builder().token(BOT_TOKEN).build()
     
