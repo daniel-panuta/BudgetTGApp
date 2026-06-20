@@ -72,7 +72,25 @@ Edit `.env` and provide your Telegram bot token and database settings.
 python3 main.py
 ```
 
-## 📦 Project structure
+## � Docker support
+
+### Build the Docker image
+
+```bash
+docker build -t budgetapp .
+```
+
+### Run the bot in Docker
+
+```bash
+docker run --env-file .env --rm budgetapp
+```
+
+### Notes
+
+- `Dockerfile` installs dependencies with `pip install -r requirements.txt`
+
+## �📦 Project structure
 
 ```
 BudgetApp/
