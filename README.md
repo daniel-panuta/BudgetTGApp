@@ -212,7 +212,87 @@ Example output:
   Net: 14320.00 MDL
 ```
 
-## 🛠 Troubleshooting
+## � Currency API support
+
+To support multi-currency statements and store official rates:
+
+1. Add a `currency_rates` table:
+
+```sql
+CREATE TABLE currency_rates (
+  id SERIAL PRIMARY KEY,
+  rate_date DATE NOT NULL,
+  currency VARCHAR(10) NOT NULL,
+  rate_to_mdl NUMERIC(12, 6) NOT NULL,
+  UNIQUE(rate_date, currency)
+);
+```
+
+2. Use a currency API to fetch daily rates and persist them.
+   - Example endpoints: exchangerate.host, openexchangerates.org, fixer.io
+   - Store `rate_date`, `currency`, and `rate_to_mdl`.
+   - When parsing a transaction, use `currency` and `amount_original` to calculate `amount_mdl`.
+
+3. Example flow:
+   - Parse transaction currency from statement
+   - Lookup rate for transaction date and currency
+   - Convert original amount to MDL
+   - Save both `amount_original` and `amount_mdl`
+
+4. This enables analysis of:
+   - currency exposure by month
+   - foreign spending trends
+   - impact of exchange rates on expenses
+
+## 📅 Salary and recurring income analysis
+
+To model salary payment dates and recurring income:
+
+1. Add a salary schedule table:
+
+```sql
+CREATE TABLE salary_schedule (
+  id SERIAL PRIMARY KEY,
+  salary_date DATE NOT NULL,
+  amount NUMERIC(12, 2),
+  description TEXT,
+  recurring BOOLEAN DEFAULT TRUE
+);
+```
+
+2. Detect monthly salary transactions by category and description.
+   - Mark transactions with category `income` and shop names like `Salary`, `Employer`, or known payroll sources.
+   - Save the actual salary date and amount.
+
+3. Use salary data to analyze:
+   - monthly income consistency
+   - salary date changes over time
+   - salary-to-expense ratio per month
+   - if expenses spike before or after salary date
+
+## 📈 Extended analytics ideas
+
+Add richer reporting beyond simple monthly sums:
+
+- Monthly income vs. expense ratio
+- Average spending per category and merchant
+- Trend lines for each category over 3 / 6 / 12 months
+- Salary date vs. cash flow timing analysis
+- Recurring payment detection and projection
+- Currency breakdown: local vs foreign spending
+- Category share of total expenses
+- Top merchants by value and frequency
+
+## 🚀 Implementation notes
+
+These enhancements are useful for turning raw transaction data into budgeting insights:
+
+- Keep `currency` in each transaction record
+- Store `amount_original`, `amount_mdl`, and `rate_date`
+- Use a separate rate table for historical accuracy
+- Add explicit salary/recurring income metadata if needed
+
+## �🛠 Troubleshooting
 
 ### "Database connection failed"
 - Ensure PostgreSQL is running

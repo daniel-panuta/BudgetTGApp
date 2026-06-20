@@ -365,6 +365,14 @@ def insert_transaction(conn, date, shop_id, category_id, amount, raw_text, curre
         Transaction ID (int) or None if error
     """
     try:
+        # Normalize values so stored transactions are always positive amounts
+        if isinstance(amount, (int, float)):
+            amount = abs(amount)
+        if isinstance(amount_original, (int, float)):
+            amount_original = abs(amount_original)
+        if isinstance(amount_mdl, (int, float)):
+            amount_mdl = abs(amount_mdl)
+
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO transactions (
