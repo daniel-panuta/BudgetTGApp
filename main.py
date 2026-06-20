@@ -158,11 +158,11 @@ async def approve_transactions(update: Update, context: ContextTypes.DEFAULT_TYP
                 logger.warning(f"⏭️  [{idx}/{len(pending_data)}] Failed to get/create shop: {transaction['shop']}")
                 continue
             
-            # Get default category or use first expense category
+            # Get default category from shop, fallback to category 1 if not set
             category_id = db.get_default_category_for_shop(conn, shop_id)
             if not category_id:
-                category_id = db.get_expense_category(conn)
-            
+                category_id = 1
+
             if not category_id:
                 logger.warning(f"⏭️  [{idx}/{len(pending_data)}] No category found for {transaction['shop']}")
                 continue

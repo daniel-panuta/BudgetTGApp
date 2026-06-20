@@ -221,7 +221,11 @@ def get_shop_id_smart(conn, shop_name):
             return shop_id
         
         # 4. No confident match found, create new shop with normalized name
-        cursor.execute("INSERT INTO shops (name) VALUES (%s) RETURNING id", (normalized_name,))
+        # New shops default to category ID 1 when available.
+        cursor.execute(
+            "INSERT INTO shops (name, default_category_id) VALUES (%s, (SELECT id FROM categories WHERE id = 1)) RETURNING id",
+            (normalized_name,)
+        )
         shop_id = cursor.fetchone()[0]
         conn.commit()
         logger.info(f"✅ Created new shop: {normalized_name} (original: {shop_name}) (ID: {shop_id})")
