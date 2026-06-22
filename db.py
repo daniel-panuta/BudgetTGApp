@@ -2,6 +2,7 @@
 Database module - all CRUD operations and database interactions
 """
 import logging
+from datetime import date, timedelta
 
 import psycopg2
 import psycopg2.extras
@@ -186,11 +187,14 @@ def get_shop_id_smart(conn, shop_name):
         normalized_name = normalize_shop_name(shop_name)
         logger.debug(f"Normalized shop name: '{shop_name}' → '{normalized_name}'")
         
-        # 1. Try exact match first (fastest)
-        cursor.execute("SELECT id FROM shops WHERE UPPER(name) = %s", (normalized_name,))
+        # 1. Try exact match first on shop name or commercial name
+        cursor.execute(
+            "SELECT id FROM shops WHERE UPPER(name) = %s OR UPPER(commercial_name) = %s",
+            (normalized_name, normalized_name)
+        )
         result = cursor.fetchone()
         if result:
-            logger.debug(f"✅ Found exact match for shop: {normalized_name} (ID: {result[0]})")
+            logger.debug(f"✅ Found exact match for shop or commercial name: {normalized_name} (ID: {result[0]})")
             return result[0]
         
         # 2. Extract keywords from normalized shop name
@@ -198,19 +202,26 @@ def get_shop_id_smart(conn, shop_name):
         logger.debug(f"Extracted keywords from '{normalized_name}': {keywords}")
         
         # 3. Choose best existing shop by keyword overlap
-        cursor.execute("SELECT id, name FROM shops")
+        cursor.execute(
+            "SELECT id, name, commercial_name FROM shops"
+        )
         existing_shops = cursor.fetchall()
         best_match = None
         best_score = 0
         
-        for shop_id, existing_name in existing_shops:
-            normalized_existing = normalize_shop_name(existing_name)
-            existing_keywords = set(extract_keywords(normalized_existing))
-            common = set(keywords) & existing_keywords
-            score = len(common)
-            if score > best_score:
-                best_score = score
-                best_match = (shop_id, existing_name, normalized_existing, common)
+        for shop_id, existing_name, commercial_name in existing_shops:
+            candidate_names = [existing_name]
+            if commercial_name:
+                candidate_names.append(commercial_name)
+
+            for current_name in candidate_names:
+                normalized_existing = normalize_shop_name(current_name)
+                existing_keywords = set(extract_keywords(normalized_existing))
+                common = set(keywords) & existing_keywords
+                score = len(common)
+                if score > best_score:
+                    best_score = score
+                    best_match = (shop_id, current_name, normalized_existing, common)
         
         if best_match and best_score >= 2:
             shop_id, existing_name, normalized_existing, common = best_match
@@ -234,6 +245,24 @@ def get_shop_id_smart(conn, shop_name):
     except Exception as e:
         logger.error(f"❌ Error in smart shop matching: {str(e)}")
         conn.rollback()
+        return None
+
+
+def find_shop_id(conn, shop_name):
+    """
+    Find an existing shop ID by matching against name or commercial_name.
+    """
+    try:
+        cursor = conn.cursor()
+        normalized_name = normalize_shop_name(shop_name)
+        cursor.execute(
+            "SELECT id FROM shops WHERE UPPER(name) = %s OR UPPER(commercial_name) = %s",
+            (normalized_name, normalized_name)
+        )
+        result = cursor.fetchone()
+        return result[0] if result else None
+    except Exception as e:
+        logger.error(f"❌ Error finding shop by name: {str(e)}")
         return None
 
 
@@ -300,6 +329,85 @@ def update_shop_default_category(conn, shop_id, category_id):
         return False
 
 # ============================================================================
+# SALARY CYCLE / ANALYSIS HELPERS
+# ============================================================================
+
+def get_salary_day(conn, year, month):
+    """Return the configured salary payment date for a given year and month."""
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT salary_date FROM salary_days WHERE year = %s AND month = %s",
+            (year, month)
+        )
+        result = cursor.fetchone()
+        return result[0] if result else None
+    except Exception as e:
+        logger.error(f"❌ Error fetching salary day: {str(e)}")
+        return None
+
+
+def _previous_month(year, month):
+    if month == 1:
+        return year - 1, 12
+    return year, month - 1
+
+
+def get_salary_cycle_periods(conn, today=None):
+    """Return current and previous analysis periods based on salary dates."""
+    if today is None:
+        today = date.today()
+
+    current_year = today.year
+    current_month = today.month
+    current_salary = get_salary_day(conn, current_year, current_month)
+    previous_year, previous_month = _previous_month(current_year, current_month)
+    previous_salary = get_salary_day(conn, previous_year, previous_month)
+
+    if current_salary and current_salary <= today:
+        current_start = current_salary
+    else:
+        current_start = date(current_year, current_month, 1)
+
+    current_end = today
+
+    if current_salary and previous_salary and current_salary <= today:
+        previous_start = previous_salary
+        previous_end = current_salary
+    else:
+        previous_start = date(previous_year, previous_month, 1)
+        previous_end = date(current_year, current_month, 1) - timedelta(days=1)
+
+    return {
+        "current": (current_start, current_end),
+        "previous": (previous_start, previous_end)
+    }
+
+
+def get_analysis_for_period(conn, start_date, end_date):
+    """Return category analysis for a custom date range."""
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                c.name,
+                c.type,
+                COUNT(t.id) as transaction_count,
+                SUM(t.amount) as total_amount
+            FROM transactions t
+            JOIN categories c ON t.category_id = c.id
+            WHERE t.date >= %s
+            AND t.date <= %s
+            GROUP BY c.id, c.name, c.type
+            ORDER BY c.type DESC, c.name
+        """, (start_date, end_date))
+
+        return cursor.fetchall()
+    except Exception as e:
+        logger.error(f"❌ Error fetching custom period analysis: {str(e)}")
+        return []
+
+# ============================================================================
 # TRANSACTIONS CRUD
 # ============================================================================
 
@@ -331,18 +439,19 @@ def check_duplicate_transaction(conn, date, shop_name, amount, raw_text):
         if cursor.fetchone() is not None:
             logger.debug(f"⚠️ Exact duplicate found (by raw_text): {raw_text[:50]}...")
             return True
-        
-        # Check 2: Similar transaction (date + shop + amount)
-        cursor.execute("""
-            SELECT id FROM transactions 
-            WHERE date = %s 
-            AND amount = %s
-            AND shop_id = (SELECT id FROM shops WHERE name = %s)
-        """, (date, amount, shop_name))
-        
-        if cursor.fetchone() is not None:
-            logger.debug(f"⚠️ Similar duplicate found: {date} | {shop_name} | {amount}")
-            return True
+
+        # Try to resolve shop by name or commercial name without creating a new shop
+        shop_id = find_shop_id(conn, shop_name)
+        if shop_id:
+            cursor.execute("""
+                SELECT id FROM transactions 
+                WHERE date = %s 
+                AND amount = %s
+                AND shop_id = %s
+            """, (date, amount, shop_id))
+            if cursor.fetchone() is not None:
+                logger.debug(f"⚠️ Similar duplicate found: {date} | {shop_name} | {amount}")
+                return True
         
         return False
         

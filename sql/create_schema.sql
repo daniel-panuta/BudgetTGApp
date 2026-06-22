@@ -9,10 +9,20 @@ CREATE TABLE categories (
 CREATE TABLE shops (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) UNIQUE NOT NULL,
+    commercial_name VARCHAR(100),
     default_category_id INT REFERENCES categories(id) ON DELETE SET NULL
 );
 
--- 3. Transactions History Table
+-- 3. Salary Days Table (defines payroll cycle boundaries for analysis)
+CREATE TABLE salary_days (
+    id SERIAL PRIMARY KEY,
+    year INT NOT NULL,
+    month INT NOT NULL,
+    salary_date DATE NOT NULL,
+    UNIQUE(year, month)
+);
+
+-- 4. Transactions History Table
 CREATE TABLE transactions (
     id SERIAL PRIMARY KEY,
     date DATE NOT NULL,

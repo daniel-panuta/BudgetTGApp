@@ -29,6 +29,19 @@ INSERT INTO categories (name, type) VALUES
   ('Entertainment', 'expense'),
   ('Salary', 'income'),
   ('Other', 'expense');
+
+# Add salary day configuration
+INSERT INTO salary_days (year, month, salary_date) VALUES
+  (2026, 5, '2026-05-14'),
+  (2026, 6, '2026-06-12');
+```
+
+### Updating an existing database
+
+If you already have an existing schema, run the migration script:
+
+```bash
+psql -U postgres -d budget_app -f sql/alter_schema.sql
 ```
 
 ## 2. Setup Python Environment

@@ -5,7 +5,7 @@ Handles all user interactions and coordinates between modules
 import logging
 import os
 import parser
-from datetime import datetime
+from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
@@ -257,49 +257,49 @@ async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     try:
-        analysis = db.get_monthly_analysis(conn, current_year, current_month)
-        
-        if not analysis:
+        periods = db.get_salary_cycle_periods(conn, today=date.today())
+        current_start, current_end = periods['current']
+        previous_start, previous_end = periods['previous']
+
+        previous_analysis = db.get_analysis_for_period(conn, previous_start, previous_end)
+        current_analysis = db.get_analysis_for_period(conn, current_start, current_end)
+
+        if not previous_analysis and not current_analysis:
             await update.message.reply_text(
-                f"📊 No transactions found for {current_year}-{current_month:02d}"
+                f"📊 No transactions found between {previous_start} and {current_end}."
             )
             return
-        
-        # Build response
-        response = [f"📊 **Monthly Analysis - {current_year}-{current_month:02d}**\n"]
-        
-        income_total = 0.0
-        expense_total = 0.0
-        
-        # Process expenses
-        response.append("**💸 Expenses:**")
-        for category_name, cat_type, count, total in analysis:
-            if cat_type == 'expense':
+
+        def format_analysis_section(title, start_date, end_date, rows):
+            section = [f"**{title}: {start_date} → {end_date}**"]
+            if not rows:
+                section.append("  • No transactions recorded")
+                return section
+
+            expense_total = 0.0
+            income_total = 0.0
+            for category_name, cat_type, count, total in rows:
                 total_amount = float(total) if total else 0.0
-                response.append(f"  • {category_name}: {count} transactions | {total_amount:.2f} MDL")
-                expense_total += total_amount
-        
+                if cat_type == 'expense':
+                    expense_total += total_amount
+                else:
+                    income_total += total_amount
+                section.append(f"  • {category_name}: {count} transactions | {total_amount:.2f} MDL")
+
+            section.append(f"  • Total Income: {income_total:.2f} MDL")
+            section.append(f"  • Total Expenses: {expense_total:.2f} MDL")
+            section.append(f"  • Net: {(income_total - expense_total):.2f} MDL")
+            return section
+
+        response = ["📊 **Salary-Day Based Analysis**\n"]
+        response += format_analysis_section(
+            "Previous salary cycle", previous_start, previous_end, previous_analysis
+        )
         response.append("")
-        
-        # Process income
-        response.append("**💰 Income:**")
-        has_income = False
-        for category_name, cat_type, count, total in analysis:
-            if cat_type == 'income':
-                total_amount = float(total) if total else 0.0
-                response.append(f"  • {category_name}: {count} transactions | {total_amount:.2f} MDL")
-                income_total += total_amount
-                has_income = True
-        
-        if not has_income:
-            response.append("  • No income recorded")
-        
-        response.append("")
-        response.append(f"📈 **Summary:**")
-        response.append(f"  Total Income: {income_total:.2f} MDL")
-        response.append(f"  Total Expenses: {expense_total:.2f} MDL")
-        response.append(f"  Net: {income_total - expense_total:.2f} MDL")
-        
+        response += format_analysis_section(
+            "Current salary cycle", current_start, current_end, current_analysis
+        )
+
         await update.message.reply_text(
             "\n".join(response),
             parse_mode="Markdown"
