@@ -9,9 +9,19 @@ import re
 import PyPDF2
 from bs4 import BeautifulSoup
 
-from .config import FILTER_KEYWORDS, PDF_PATTERN
+from .config import FILTER_KEYWORDS
 
-TEMPLATE_FILE = os.path.join(os.path.dirname(__file__), 'parser_templates.json')
+logger = logging.getLogger(__name__)
+
+TEMPLATE_FILE = os.path.join(os.path.dirname(__file__), 'templates', 'parser_templates.json')
+
+DEFAULT_PDF_TEMPLATES = [
+    {
+        "name": "default",
+        "pattern": r"(?P<date>\d{4}-\d{2}-\d{2})\s+(?:\d{4}-\d{2}-\d{2})\s+(?P<shop>.+?)\s+(?P<amount>-?\d[\d\s.,]*\.\d{2})\s+MDL",
+        "currency": "MDL"
+    }
+]
 
 
 def load_pdf_templates():
@@ -27,8 +37,6 @@ def load_pdf_templates():
 
 
 PDF_TEMPLATES = load_pdf_templates()
-
-logger = logging.getLogger(__name__)
 
 # Default exchange rates for currency conversion when MDL is not directly available.
 # Update these values with actual historical rates for accurate conversion.
@@ -231,12 +239,8 @@ def parse_transactions_from_text(text):
     transactions = []
 
     if not PDF_TEMPLATES:
-        logger.warning("No PDF templates loaded; using default pattern")
-        templates = [{
-            "name": "default",
-            "pattern": PDF_PATTERN,
-            "currency": "MDL"
-        }]
+        logger.warning("No PDF templates loaded; using default templates")
+        templates = DEFAULT_PDF_TEMPLATES
     else:
         templates = PDF_TEMPLATES
 

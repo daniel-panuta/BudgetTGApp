@@ -4,6 +4,7 @@ Handles all user interactions and coordinates between modules
 """
 import logging
 import os
+import time
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
@@ -335,11 +336,16 @@ def start_health_server(port=8080):
 
 
 def main():
-    if not BOT_TOKEN:
-        logger.error("Missing BOT_TOKEN variable!")
-        return
-
     start_health_server(8080)
+
+    if not BOT_TOKEN:
+        logger.error("Missing BOT_TOKEN variable! Bot polling is disabled until BOT_TOKEN is provided.")
+        try:
+            while True:
+                time.sleep(3600)
+        except KeyboardInterrupt:
+            logger.info("Shutdown requested")
+        return
 
     app = Application.builder().token(BOT_TOKEN).build()
     

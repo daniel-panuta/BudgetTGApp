@@ -13,8 +13,6 @@ load_dotenv()
 # TELEGRAM CONFIGURATION
 # ============================================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN is required in .env file")
 
 # ============================================================================
 # DATABASE CONFIGURATION
@@ -57,11 +55,8 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "False").lower() == "true"
 # ============================================================================
 # PDF PARSING CONFIGURATION
 # ============================================================================
-# Regex pattern for maib bank statements
-PDF_PATTERN = os.getenv(
-    "PDF_PATTERN",
-    r"(\d{4}-\d{2}-\d{2})\s+(?:\d{4}-\d{2}-\d{2})\s+(.+?)\s+(-\d[\d\s.,]*\.\d{2})\s+MDL"
-)
+# PDF templates are loaded from budgetapp/templates/parser_templates.json
+# and fallback templates are defined inside budgetapp/parser.py.
 
 # Transactions to filter out (P2P transfers, A2A transfers, IPS, etc.)
 FILTER_KEYWORDS = [
