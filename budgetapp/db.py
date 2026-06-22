@@ -478,13 +478,13 @@ def insert_transaction(conn, date, shop_id, category_id, amount, raw_text, curre
         Transaction ID (int) or None if error
     """
     try:
-        # Normalize values so stored transactions are always positive amounts
+        # Normalize stored transaction amounts to absolute values.
         if isinstance(amount, (int, float)):
-            amount = abs(amount)
+            amount = abs(float(amount))
         if isinstance(amount_original, (int, float)):
-            amount_original = abs(amount_original)
+            amount_original = abs(float(amount_original))
         if isinstance(amount_mdl, (int, float)):
-            amount_mdl = abs(amount_mdl)
+            amount_mdl = abs(float(amount_mdl))
 
         cursor = conn.cursor()
         cursor.execute("""

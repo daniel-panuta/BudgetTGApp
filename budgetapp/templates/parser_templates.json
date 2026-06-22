@@ -1,32 +1,44 @@
 [
   {
-    "name": "maib_standard_pdf",
-    "description": "MAIB PDF row with posting date, transaction date, shop description and MDL amount",
-    "pattern": "(?P<date>\\d{4}-\\d{2}-\\d{2})\\s+(?:\\d{4}-\\d{2}-\\d{2})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2})\\s+MDL",
-    "currency": "MDL"
-  },
-  {
-    "name": "maib_dot_date_pdf",
-    "description": "Alternative MAIB PDF row with date format DD.MM.YYYY and MDL amount",
-    "pattern": "(?P<date>\\d{2}\\.\\d{2}\\.\\d{4})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2})\\s+MDL",
-    "currency": "MDL"
-  },
-  {
-    "name": "generic_pdf_currency_code",
-    "description": "Generic PDF row with ISO currency code after amount",
-    "pattern": "(?P<date>\\d{4}-\\d{2}-\\d{2})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2})\\s+(?P<currency>MDL|USD|EUR)",
+    "type": "pdf",
+    "name": "maib_pdf_transaction",
+    "description": "MAIB PDF row with transaction and processing dates, shop description, transaction currency amount, and account MDL amount",
+    "pattern": "(?s)^(?P<date>\\d{4}-\\d{2}-\\d{2})\\s+(?P<processing_date>\\d{4}-\\d{2}-\\d{2})\\s+(?P<shop>.+?)(?P<amount>-?(?:\\d{1,3}(?:\\s\\d{3})*|\\d+)\\.\\d{2}[+-]?)\\s+(?P<currency>MDL|RON|USD|EUR)\\s+(?P<amount_mdl>-?(?:\\d{1,3}(?:\\s\\d{3})*|\\d+)\\.\\d{2}[+-]?)(?:\\s+-?(?:\\d{1,3}(?:\\s\\d{3})*|\\d+)\\.\\d{2}[+-]?)?\\b",
     "currency": "auto"
   },
   {
-    "name": "generic_pdf_european_date",
-    "description": "Generic PDF row with DD-MM-YYYY and numeric amount",
-    "pattern": "(?P<date>\\d{2}-\\d{2}-\\d{4})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2})\\s+MDL",
+    "type": "pdf",
+    "name": "maib_pdf_transaction_single_date",
+    "description": "MAIB PDF row with a single transaction date, shop description, transaction currency amount, and optional account MDL amount",
+    "pattern": "(?s)^(?!\\d{4}-\\d{2}-\\d{2}\\s+\\d{4}-\\d{2}-\\d{2})(?P<date>\\d{4}-\\d{2}-\\d{2})\\s+(?P<shop>.+?)(?P<amount>-?(?:\\d{1,3}(?:\\s\\d{3})*|\\d+)\\.\\d{2}[+-]?)\\s+(?P<currency>MDL|RON|USD|EUR)(?:\\s+(?P<amount_mdl>-?(?:\\d{1,3}(?:\\s\\d{3})*|\\d+)\\.\\d{2}[+-]?))?(?:\\s+-?(?:\\d{1,3}(?:\\s\\d{3})*|\\d+)\\.\\d{2}[+-]?)?\\b",
+    "currency": "auto"
+  },
+  {
+    "type": "pdf",
+    "name": "maib_pdf_transaction_dot_date",
+    "description": "MAIB PDF row with DD.MM.YYYY dates and MDL amount",
+    "pattern": "(?s)(?P<date>\\d{2}\\.\\d{2}\\.\\d{4})\\s+(?:\\d{2}\\.\\d{2}\\.\\d{4})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2}[+-]?)\\s+MDL",
     "currency": "MDL"
   },
   {
-    "name": "generic_pdf_transaction_line",
-    "description": "Fallback generic line parser for transaction rows with date and last amount",
-    "pattern": "(?P<date>\\d{4}-\\d{2}-\\d{2}|\\d{2}-\\d{2}-\\d{4}|\\d{2}\\.\\d{2}\\.\\d{4})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2})",
+    "type": "html",
+    "name": "maib_html_transaction",
+    "description": "MAIB HTML transaction row with registration date, transaction date, reference, shop, optional currency and amounts",
+    "pattern": "(?P<date>\\d{2}-\\d{2}-\\d{4})\\s+(?P<posting_date>\\d{2}-\\d{2}-\\d{4})\\s+(?P<reference>[^\\s]+)\\s+(?P<shop>.+?)\\s+(?:(?P<currency>MDL|USD|EUR)\\s+)?(?:(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2}[+-]?)\\s+)?(?P<amount_mdl>-?\\d[\\d\\s.,]*\\.\\d{2}[+-]?)$",
+    "currency": "auto"
+  },
+  {
+    "type": "html",
+    "name": "victoriabank_html_transaction",
+    "description": "Victoriabank HTML transaction row with processing date, transaction date, details and MDL amount",
+    "pattern": "(?P<processing_date>\\d{2}-\\d{2}-\\d{4})\\s+(?P<transaction_date>\\d{2}-\\d{2}-\\d{4}\\s+\\d{2}:\\d{2}:\\d{2})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2}[+-]?)\\s+MDL",
+    "currency": "MDL"
+  },
+  {
+    "type": "html",
+    "name": "generic_html_transaction",
+    "description": "Fallback generic HTML transaction row with date and MDL amount",
+    "pattern": "(?P<date>\\d{2}-\\d{2}-\\d{4})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2}[+-]?)\\s+MDL",
     "currency": "MDL"
   }
 ]

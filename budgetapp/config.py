@@ -58,13 +58,16 @@ DEBUG_MODE = os.getenv("DEBUG_MODE", "False").lower() == "true"
 # PDF templates are loaded from budgetapp/templates/parser_templates.json
 # and fallback templates are defined inside budgetapp/parser.py.
 
-# Transactions to filter out (P2P transfers, A2A transfers, IPS, etc.)
+# Transactions to filter out (P2P transfers, A2A transfers, MIA transfers, IPS, etc.)
 FILTER_KEYWORDS = [
     os.getenv("FILTER_P2P_OUT", "P2P de iesire"),
+    os.getenv("FILTER_P2P_IN", "P2P de intrare"),
     os.getenv("FILTER_A2A_IN", "A2A de intrare"),
     os.getenv("FILTER_A2A_OUT", "A2A de iesire"),
     os.getenv("FILTER_IPS", "Transfer IPS"),
     os.getenv("FILTER_DIRECT_P2P", "Direct P2P"),
+    os.getenv("FILTER_TRANSFER_MIA", "Transfer MIA"),
+    os.getenv("FILTER_MAIB_P2P", "MAIB P2P"),
 ]
 
 # ============================================================================

@@ -45,6 +45,26 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "💡 **How to use**: Just send your bank statement (PDF or HTML format) and I'll extract, show you the data, and wait for your approval before saving to database!"
     )
 
+
+def summarize_transactions_preview(transactions, preview_size=2):
+    """Return formatted preview lines for the first and last transactions."""
+    if not transactions:
+        return []
+
+    total = len(transactions)
+    if total <= preview_size * 2:
+        return [parser.format_transaction_for_display(item) for item in transactions]
+
+    preview = []
+    for item in transactions[:preview_size]:
+        preview.append(parser.format_transaction_for_display(item))
+
+    for item in transactions[-preview_size:]:
+        preview.append(parser.format_transaction_for_display(item))
+
+    return preview
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Process uploaded PDF file and extract transactions."""
     document = update.message.document
@@ -73,12 +93,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ No transactions found in this document.")
             return
 
-        # Display extracted transactions
+        # Display extracted transactions preview
         response_lines = ["📋 **Extracted Statement Expenses:**\n"]
         stats = parser.get_transaction_statistics(parsed_data)
-        
-        for item in parsed_data:
-            response_lines.append(parser.format_transaction_for_display(item))
+
+        response_lines.extend(summarize_transactions_preview(parsed_data, preview_size=2))
         
         response_lines.append(f"\n📊 **Rows Found**: {stats['count']}")
         response_lines.append(f"💰 **Total Sum**: {stats['total']:.2f} MDL")
@@ -202,10 +221,8 @@ async def approve_transactions(update: Update, context: ContextTypes.DEFAULT_TYP
         
         if inserted:
             response.append("\nInserted transactions:")
-            for tx in inserted:
-                # Escape shop name for Markdown (replace _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !)
-                safe_shop = tx['shop'][:30].replace('_', ' ').replace('*', '\\*').replace('[', '\\[').replace(']', '\\]')
-                response.append(f"  • {tx['date']} | {safe_shop} | {tx['amount']:.2f} MDL")
+            for line in summarize_transactions_preview(inserted, preview_size=2):
+                response.append(line)
         
         if duplicates:
             response.append(f"\n⚠️ Total Duplicates (skipped): {len(duplicates)}")
