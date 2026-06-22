@@ -1,0 +1,32 @@
+[
+  {
+    "name": "maib_standard_pdf",
+    "description": "MAIB PDF row with posting date, transaction date, shop description and MDL amount",
+    "pattern": "(?P<date>\\d{4}-\\d{2}-\\d{2})\\s+(?:\\d{4}-\\d{2}-\\d{2})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2})\\s+MDL",
+    "currency": "MDL"
+  },
+  {
+    "name": "maib_dot_date_pdf",
+    "description": "Alternative MAIB PDF row with date format DD.MM.YYYY and MDL amount",
+    "pattern": "(?P<date>\\d{2}\\.\\d{2}\\.\\d{4})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2})\\s+MDL",
+    "currency": "MDL"
+  },
+  {
+    "name": "generic_pdf_currency_code",
+    "description": "Generic PDF row with ISO currency code after amount",
+    "pattern": "(?P<date>\\d{4}-\\d{2}-\\d{2})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2})\\s+(?P<currency>MDL|USD|EUR)",
+    "currency": "auto"
+  },
+  {
+    "name": "generic_pdf_european_date",
+    "description": "Generic PDF row with DD-MM-YYYY and numeric amount",
+    "pattern": "(?P<date>\\d{2}-\\d{2}-\\d{4})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2})\\s+MDL",
+    "currency": "MDL"
+  },
+  {
+    "name": "generic_pdf_transaction_line",
+    "description": "Fallback generic line parser for transaction rows with date and last amount",
+    "pattern": "(?P<date>\\d{4}-\\d{2}-\\d{2}|\\d{2}-\\d{2}-\\d{4}|\\d{2}\\.\\d{2}\\.\\d{4})\\s+(?P<shop>.+?)\\s+(?P<amount>-?\\d[\\d\\s.,]*\\.\\d{2})",
+    "currency": "MDL"
+  }
+]

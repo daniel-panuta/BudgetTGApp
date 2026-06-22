@@ -1,13 +1,32 @@
 """
 PDF/HTML Parser module - extracts transactions from bank statements
 """
+import json
 import logging
+import os
 import re
 
 import PyPDF2
 from bs4 import BeautifulSoup
 
-from config import FILTER_KEYWORDS, PDF_PATTERN
+from .config import FILTER_KEYWORDS, PDF_PATTERN
+
+TEMPLATE_FILE = os.path.join(os.path.dirname(__file__), 'parser_templates.json')
+
+
+def load_pdf_templates():
+    """Load PDF parsing templates from JSON file."""
+    try:
+        with open(TEMPLATE_FILE, 'r', encoding='utf-8') as file:
+            templates = json.load(file)
+        logger.debug(f"Loaded {len(templates)} PDF templates")
+        return templates
+    except Exception as e:
+        logger.error(f"❌ Error loading PDF templates: {str(e)}")
+        return []
+
+
+PDF_TEMPLATES = load_pdf_templates()
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +82,61 @@ def normalize_currency(currency_str):
     if norm in ('EUR', 'EURO'):
         return 'EUR'
     return norm
+
+
+def _normalize_currency_template(raw_currency, currency_hint):
+    if raw_currency:
+        return normalize_currency(raw_currency)
+    if currency_hint and currency_hint != 'auto':
+        return normalize_currency(currency_hint)
+    return 'MDL'
+
+
+def _normalize_shop(raw_shop):
+    if not raw_shop:
+        return None
+    shop = raw_shop.replace('\n', ' ').strip()
+    shop = ' '.join(shop.split())
+    return shop
+
+
+def _normalize_date(raw_date):
+    if not raw_date:
+        return None
+
+    raw_date = raw_date.strip()
+    if re.match(r'^\\d{4}-\\d{2}-\\d{2}$', raw_date):
+        return raw_date
+    if re.match(r'^\\d{2}\\.\\d{2}\\.\\d{4}$', raw_date):
+        day, month, year = raw_date.split('.')
+        return f"{year}-{month}-{day}"
+    if re.match(r'^\\d{2}-\\d{2}-\\d{4}$', raw_date):
+        day, month, year = raw_date.split('-')
+        return f"{year}-{month}-{day}"
+
+    logger.debug(f"Unsupported date format: {raw_date}")
+    return None
+
+
+def _parse_amount_for_template(raw_amount):
+    if not raw_amount:
+        return None
+    value = raw_amount.strip().replace(' ', '').replace(',', '.')
+    is_negative = value.endswith('-')
+    if is_negative:
+        value = value[:-1]
+    try:
+        amount = float(value)
+        return -amount if is_negative else amount
+    except ValueError:
+        logger.debug(f"Failed to parse amount: {raw_amount}")
+        return None
+
+
+def _resolve_amount_mdl(date_value, currency, amount):
+    if currency == 'MDL':
+        return round(amount, 2)
+    return convert_amount_to_mdl(date_value, currency, amount)
 
 
 def get_exchange_rate_for_date(date_str, currency):
@@ -146,55 +220,87 @@ def extract_text_from_pdf(file_path):
 
 def parse_transactions_from_text(text):
     """
-    Parse transactions from PDF text using regex pattern.
-    
+    Parse transactions from PDF text using configured templates.
+
     Args:
         text: Text extracted from PDF
-        
+
     Returns:
         List of transaction dictionaries
     """
     transactions = []
-    
-    try:
-        # Find all matches using pattern
-        matches = re.findall(PDF_PATTERN, text)
-        logger.debug(f"Found {len(matches)} regex matches")
-        
-        for match in matches:
-            date, raw_shop, raw_amount = match
-            
-            # Normalize shop name
-            shop = raw_shop.replace('\n', ' ').strip()
-            
-            # Normalize amount (remove negative sign, spaces, commas)
-            amount_str = raw_amount.replace('-', '').replace(' ', '').replace(',', '')
-            
-            # Check if should be filtered
-            if _should_filter_transaction(shop):
-                logger.debug(f"Filtering out: {shop}")
-                continue
-            
-            # Create transaction object
-            transaction = {
-                "date": date,
-                "shop": shop,
-                "currency": "MDL",
-                "amount_original": float(amount_str),
-                "amount_mdl": float(amount_str),
-                "amount": float(amount_str),
-                "raw_text": f"{date} - {shop} - {raw_amount} MDL"
-            }
-            
-            transactions.append(transaction)
-            logger.debug(f"Parsed transaction: {date} | {shop} | {amount_str} MDL")
-        
-        logger.info(f"✅ Successfully parsed {len(transactions)} transactions")
-        return transactions
-        
-    except Exception as e:
-        logger.error(f"❌ Error parsing transactions: {str(e)}")
-        return []
+
+    if not PDF_TEMPLATES:
+        logger.warning("No PDF templates loaded; using default pattern")
+        templates = [{
+            "name": "default",
+            "pattern": PDF_PATTERN,
+            "currency": "MDL"
+        }]
+    else:
+        templates = PDF_TEMPLATES
+
+    for template in templates:
+        try:
+            pattern = template.get('pattern')
+            currency_hint = template.get('currency', 'MDL')
+            regex = re.compile(pattern)
+            matches = list(regex.finditer(text))
+            logger.debug(f"Template '{template.get('name')}' found {len(matches)} matches")
+
+            for match in matches:
+                groups = match.groupdict()
+                raw_date = groups.get('date')
+                raw_shop = groups.get('shop')
+                raw_amount = groups.get('amount')
+                raw_currency = groups.get('currency')
+
+                # Normalize values
+                date_value = _normalize_date(raw_date)
+                shop = _normalize_shop(raw_shop)
+                currency = _normalize_currency_template(raw_currency, currency_hint)
+                amount_value = _parse_amount_for_template(raw_amount)
+
+                if not date_value or not shop or amount_value is None:
+                    logger.debug(f"Skipping invalid transaction row: date={raw_date}, shop={raw_shop}, amount={raw_amount}")
+                    continue
+
+                if _should_filter_transaction(shop):
+                    logger.debug(f"Filtering out: {shop}")
+                    continue
+
+                amount_mdl = _resolve_amount_mdl(date_value, currency, amount_value)
+                if amount_mdl is None:
+                    logger.debug(f"Could not resolve MDL amount for {shop} on {date_value}")
+                    continue
+
+                transaction = {
+                    "date": date_value,
+                    "shop": shop,
+                    "currency": currency,
+                    "amount_original": amount_value,
+                    "amount_mdl": amount_mdl,
+                    "amount": amount_mdl,
+                    "raw_text": f"{date_value} - {shop} - {raw_amount} {currency}"
+                }
+
+                if validate_transaction(transaction):
+                    transactions.append(transaction)
+                    logger.debug(f"Parsed transaction: {date_value} | {shop} | {amount_mdl:.2f} {currency}")
+
+            if transactions:
+                logger.info(f"✅ Parsed {len(transactions)} transactions using template '{template.get('name')}'")
+                return transactions
+
+        except re.error as e:
+            logger.error(f"❌ Invalid regex in template '{template.get('name')}': {str(e)}")
+            continue
+        except Exception as e:
+            logger.error(f"❌ Error parsing with template '{template.get('name')}': {str(e)}")
+            continue
+
+    logger.warning("⚠️ No transactions could be parsed with configured templates")
+    return transactions
 
 def parse_pdf_file(file_path):
     """
@@ -709,38 +815,41 @@ def _should_filter_transaction(shop_name):
 def validate_transaction(transaction):
     """
     Validate transaction data.
-    
+
     Args:
         transaction: Transaction dictionary
-        
+
     Returns:
         True if valid, False otherwise
     """
     try:
-        # Check required fields
         required_fields = ["date", "shop", "amount", "raw_text"]
         for field in required_fields:
             if field not in transaction:
                 logger.warning(f"Missing field '{field}' in transaction")
                 return False
-        
-        # Check date format
+
         if not re.match(r"^\d{4}-\d{2}-\d{2}$", transaction["date"]):
             logger.warning(f"Invalid date format: {transaction['date']}")
             return False
-        
-        # Check amount is positive number
-        if not isinstance(transaction["amount"], (int, float)) or transaction["amount"] <= 0:
-            logger.warning(f"Invalid amount: {transaction['amount']}")
+
+        if not isinstance(transaction["amount"], (int, float)):
+            logger.warning(f"Invalid amount type: {transaction['amount']} ({type(transaction['amount'])})")
             return False
-        
-        # Check shop name is not empty
+
+        if transaction["amount"] == 0:
+            logger.warning(f"Transaction amount is zero: {transaction}")
+            return False
+
         if not transaction["shop"] or len(transaction["shop"].strip()) == 0:
             logger.warning("Empty shop name")
             return False
-        
+
+        if transaction.get("currency") and transaction["currency"] not in ("MDL", "USD", "EUR"):
+            logger.warning(f"Unsupported currency: {transaction['currency']}")
+            return False
+
         return True
-        
     except Exception as e:
         logger.error(f"❌ Error validating transaction: {str(e)}")
         return False

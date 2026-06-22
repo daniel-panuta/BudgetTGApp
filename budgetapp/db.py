@@ -7,7 +7,7 @@ from datetime import date, timedelta
 import psycopg2
 import psycopg2.extras
 
-from config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_SSLMODE, DB_USER
+from .config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_SSLMODE, DB_USER
 
 logger = logging.getLogger(__name__)
 
