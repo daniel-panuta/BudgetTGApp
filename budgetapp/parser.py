@@ -498,7 +498,7 @@ def parse_transactions_from_text(text):
                     amount_mdl = abs(amount_mdl)
                     amount_original = abs(amount_value)
                     flow = 'out' if amount_value < 0 else 'in'
-                    unique_key = (transaction_date, processing_date, shop, currency, amount_mdl, amount_original)
+                    unique_key = (transaction_date, processing_date, shop, currency, amount_mdl, amount_original, flow)
                     if unique_key in seen_keys:
                         continue
 
