@@ -68,6 +68,7 @@ FILTER_KEYWORDS = [
     os.getenv("FILTER_DIRECT_P2P", "Direct P2P"),
     os.getenv("FILTER_TRANSFER_MIA", "Transfer MIA"),
     os.getenv("FILTER_MAIB_P2P", "MAIB P2P"),
+    os.getenv("FILTER_MAIB_ATM", "ATM MAIB"),
 ]
 
 # ============================================================================

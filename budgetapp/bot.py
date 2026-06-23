@@ -82,6 +82,12 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tg_file = await context.bot.get_file(document.file_id)
         await tg_file.download_to_drive(custom_path=TEMP_PDF_FILENAME)
         
+        # Determine file extension
+        if file_name_lower.endswith('.pdf'):
+            file_extension = 'pdf'
+        else:
+            file_extension = 'html'
+        
         # Parse document (auto-detects PDF or HTML)
         parsed_data = parser.parse_file(TEMP_PDF_FILENAME)
         
@@ -103,8 +109,10 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response_lines.append(f"💰 **Total Sum**: {stats['total']:.2f} MDL")
         response_lines.append(f"📈 **Average**: {stats['average']:.2f} MDL")
         
-        # Store pending transactions in context
+        # Store pending transactions and file info in context
         context.user_data['pending_transactions'] = parsed_data
+        context.user_data['upload_filename'] = document.file_name
+        context.user_data['upload_extension'] = file_extension
         
         # Create approval buttons
         keyboard = [
@@ -135,10 +143,19 @@ async def approve_transactions(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     
     pending_data = context.user_data['pending_transactions']
+    filename = context.user_data.get('upload_filename', 'unknown')
+    extension = context.user_data.get('upload_extension', 'unknown')
+    
     conn = db.get_db_connection()
     
     if not conn:
         await query.edit_message_text("❌ Database connection failed!")
+        return
+    
+    # Create or get audit_insert record
+    audit_insert_id = db.get_or_create_audit_insert(conn, filename, extension)
+    if not audit_insert_id:
+        await query.edit_message_text("❌ Failed to create import audit record!")
         return
     
     duplicates = []
@@ -152,8 +169,20 @@ async def approve_transactions(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         
         for idx, transaction in enumerate(pending_data, 1):
-            # Check for duplicates (by raw_text first, then by date+shop+amount)
-            if db.check_duplicate_transaction(conn, transaction['date'], transaction['shop'], transaction['amount'], transaction['raw_text']):
+            transaction['shop'] = db.sanitize_text(transaction.get('shop', ''))
+            transaction['raw_text'] = db.sanitize_text(transaction.get('raw_text', ''))
+            transaction_processing_date = transaction.get('processing_date') or transaction['date']
+
+            # Check for duplicates
+            if db.check_duplicate_transaction(
+                conn,
+                transaction['date'],
+                transaction_processing_date,
+                transaction['shop'],
+                transaction['amount'],
+                audit_insert_id,
+                transaction['raw_text']
+            ):
                 duplicates.append(transaction)
                 logger.info(f"⏭️  [{idx}/{len(pending_data)}] Skipped duplicate: {transaction['shop']}")
                 
@@ -172,26 +201,20 @@ async def approve_transactions(update: Update, context: ContextTypes.DEFAULT_TYP
             
             # Find shop first by name or commercial name
             shop_id = db.find_shop_id(conn, transaction['shop'])
-            if shop_id:
-                category_id = db.get_default_category_for_shop(conn, shop_id) or 1
-            else:
-                # Create shop if it doesn't exist, then assign default category 1
+            if not shop_id:
+                # Create shop if it doesn't exist
                 shop_id = db.get_shop_id(conn, transaction['shop'])
                 if not shop_id:
                     logger.warning(f"⏭️  [{idx}/{len(pending_data)}] Failed to create shop: {transaction['shop']}")
                     continue
-                category_id = 1
-
-            if not category_id:
-                logger.warning(f"⏭️  [{idx}/{len(pending_data)}] No category found for {transaction['shop']}")
-                continue
             
-            # Insert transaction
+            # Insert transaction (category will be determined via shops.default_category_id JOIN)
             tx_id = db.insert_transaction(
                 conn,
                 transaction['date'],
+                transaction_processing_date,
                 shop_id,
-                category_id,
+                audit_insert_id,
                 transaction['amount'],
                 transaction['raw_text'],
                 currency=transaction.get('currency', 'MDL'),

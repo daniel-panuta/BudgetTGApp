@@ -109,7 +109,8 @@ def _normalize_currency_template(raw_currency, currency_hint, default_currency=N
 def _normalize_shop(raw_shop):
     if not raw_shop:
         return None
-    shop = raw_shop.replace('\n', ' ').strip()
+    shop = raw_shop.replace('\ufffd', ' ')
+    shop = shop.replace('\n', ' ').strip()
     shop = ' '.join(shop.split())
     return shop
 
@@ -167,29 +168,44 @@ def _parse_amount_for_template(raw_amount):
         return None
 
 
-def _resolve_amount_mdl(date_value, currency, amount, amount_mdl_from_bank=None):
+def _resolve_amount_mdl(
+    date_value,
+    currency,
+    amount,
+    amount_in_account_currency=None,
+    account_currency='MDL'
+):
     """
     Resolve MDL amount for a transaction.
     
     Priority:
-    1. Use MDL value extracted from bank statement (amount_mdl_from_bank)
-    2. If currency is MDL, return the amount
-    3. Otherwise, convert using exchange rates
+     1. If bank provides amount in account currency:
+         - account currency MDL: use it directly
+         - account currency non-MDL: convert account amount to MDL
+     2. If transaction currency is MDL, return transaction amount
+     3. Otherwise, convert transaction amount to MDL
     
     Args:
         date_value: Transaction date
         currency: Original transaction currency
         amount: Amount in original currency
-        amount_mdl_from_bank: MDL amount extracted from bank (if available)
+        amount_in_account_currency: Amount extracted from account-currency column
+        account_currency: Statement account currency (e.g., MDL, USD, EUR)
         
     Returns:
         Amount in MDL
     """
-    # Priority 1: Use bank-provided MDL amount if available
-    if amount_mdl_from_bank is not None:
-        return round(amount_mdl_from_bank, 2)
+    account_currency = normalize_currency(account_currency)
+
+    # Priority 1: Use bank-provided amount in account currency when available
+    if amount_in_account_currency is not None:
+        if account_currency == 'MDL':
+            return round(amount_in_account_currency, 2)
+        converted = convert_amount_to_mdl(date_value, account_currency, amount_in_account_currency)
+        if converted is not None:
+            return round(converted, 2)
     
-    # Priority 2: If currency is already MDL, return it
+    # Priority 2: If transaction currency is already MDL, return it
     if currency == 'MDL':
         return round(amount, 2)
     
@@ -386,6 +402,24 @@ def extract_text_from_pdf(file_path):
         logger.error(f"❌ Error extracting text from PDF: {str(e)}")
         return None
 
+
+def parse_pdf_statement_currency(text):
+    """Parse account statement currency from extracted PDF text."""
+    if not text:
+        return 'MDL'
+
+    patterns = [
+        r'Valuta\s+contului\s*[:\-]?\s*(MDL|USD|EUR|RON|RUB)\b',
+        r'Currency\s+of\s+account\s*[:\-]?\s*(MDL|USD|EUR|RON|RUB)\b',
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return normalize_currency(match.group(1))
+
+    return 'MDL'
+
 def parse_transactions_from_text(text):
     """
     Parse transactions from PDF text using configured templates.
@@ -404,6 +438,8 @@ def parse_transactions_from_text(text):
         logger.warning("⚠️ No PDF templates configured in JSON")
         return []
 
+    statement_currency = parse_pdf_statement_currency(text)
+
     grouped_text = _group_pdf_transaction_lines(text)
     lines = _split_pdf_transaction_rows(grouped_text)
 
@@ -418,29 +454,42 @@ def parse_transactions_from_text(text):
                 for match in regex.finditer(line):
                     matches += 1
                     groups = match.groupdict()
-                    raw_date = groups.get('date')
+                    raw_transaction_date = groups.get('date')
+                    raw_processing_date = groups.get('processing_date')
                     raw_shop = groups.get('shop')
                     raw_amount = groups.get('amount')
                     raw_currency = groups.get('currency')
                     raw_amount_mdl = groups.get('amount_mdl')
 
                     # Normalize values
-                    date_value = _normalize_date(raw_date)
+                    transaction_date = _normalize_date(raw_transaction_date)
+                    processing_date = _normalize_date(raw_processing_date) or transaction_date
+                    date_value = processing_date or transaction_date
                     shop = _normalize_shop(raw_shop)
                     currency = _normalize_currency_template(raw_currency, currency_hint)
                     amount_value = _parse_amount_for_template(raw_amount)
                     amount_mdl_value = _parse_amount_for_template(raw_amount_mdl)
 
-                    if not date_value or not shop or amount_value is None:
-                        logger.debug(f"Skipping invalid transaction row: date={raw_date}, shop={raw_shop}, amount={raw_amount}")
+                    if not transaction_date or not processing_date or not shop or amount_value is None:
+                        logger.debug(
+                            f"Skipping invalid transaction row: "
+                            f"transaction_date={raw_transaction_date}, processing_date={raw_processing_date}, "
+                            f"shop={raw_shop}, amount={raw_amount}"
+                        )
                         continue
 
                     if _should_filter_transaction(shop):
                         logger.debug(f"Filtering out: {shop}")
                         continue
 
-                    # Resolve MDL amount: prioritize bank-provided amount_mdl, then convert if needed
-                    amount_mdl = _resolve_amount_mdl(date_value, currency, amount_value, amount_mdl_from_bank=amount_mdl_value)
+                    # Resolve MDL amount using account currency context.
+                    amount_mdl = _resolve_amount_mdl(
+                        date_value,
+                        currency,
+                        amount_value,
+                        amount_in_account_currency=amount_mdl_value,
+                        account_currency=statement_currency
+                    )
 
                     if amount_mdl is None:
                         logger.debug(f"Could not resolve MDL amount for {shop} on {date_value}")
@@ -448,28 +497,37 @@ def parse_transactions_from_text(text):
 
                     amount_mdl = abs(amount_mdl)
                     amount_original = abs(amount_value)
-                    unique_key = (date_value, shop, currency, amount_mdl, amount_original)
+                    flow = 'out' if amount_value < 0 else 'in'
+                    unique_key = (transaction_date, processing_date, shop, currency, amount_mdl, amount_original)
                     if unique_key in seen_keys:
                         continue
 
-                    raw_text = f"{date_value} - {shop} - {amount_original:.2f} {currency} -> {amount_mdl:.2f} MDL"
+                    raw_text = (
+                        f"TX:{transaction_date} PROC:{processing_date} - "
+                        f"{shop} - {amount_original:.2f} {currency} -> {amount_mdl:.2f} MDL"
+                    )
                     if 'comision' in shop.lower() or 'commission' in shop.lower():
                         raw_text += " (commission)"
 
                     transaction = {
-                        "date": date_value,
+                        "date": transaction_date,
+                        "processing_date": processing_date,
                         "shop": shop,
                         "currency": currency,
                         "amount_original": amount_original,
                         "amount_mdl": amount_mdl,
                         "amount": amount_mdl,
+                        "_flow": flow,
                         "raw_text": raw_text
                     }
 
                     if validate_transaction(transaction):
                         seen_keys.add(unique_key)
                         transactions.append(transaction)
-                        logger.debug(f"Parsed transaction: {date_value} | {shop} | {amount_mdl:.2f} {currency}")
+                        logger.debug(
+                            f"Parsed transaction: tx={transaction_date} proc={processing_date} "
+                            f"| {shop} | {amount_mdl:.2f} {currency}"
+                        )
 
             logger.debug(f"Template '{template.get('name')}' found {matches} potential matches")
         except re.error as e:
@@ -480,6 +538,7 @@ def parse_transactions_from_text(text):
             continue
 
     if transactions:
+        transactions = _omit_card_verification_pairs(transactions)
         logger.info(f"✅ Parsed {len(transactions)} transactions using PDF templates")
     else:
         logger.warning("⚠️ No transactions could be parsed with configured templates")
@@ -670,15 +729,18 @@ def parse_victoriabank_html(html_content):
                     continue
                 
                 amount = abs(amount)
+                flow = 'out' if is_negative else 'in'
 
                 transaction = {
                     "date": date,
+                    "processing_date": date,
                     "shop": shop,
                     "currency": "MDL",
                     "amount_original": amount,
                     "amount_mdl": amount,
                     "amount": amount,
-                    "raw_text": f"{date} - {shop} - {amount_raw} MDL"
+                    "_flow": flow,
+                    "raw_text": f"TX:{date} PROC:{date} - {shop} - {amount_raw} MDL"
                 }
 
                 transactions.append(transaction)
@@ -688,6 +750,7 @@ def parse_victoriabank_html(html_content):
                 logger.debug(f"Could not parse Victoriabank row: {str(e)}")
                 continue
         
+        transactions = _omit_card_verification_pairs(transactions)
         logger.info(f"✅ Successfully parsed {len(transactions)} transactions from Victoriabank HTML")
         return transactions
         
@@ -707,6 +770,7 @@ def parse_maib_html(html_content):
     """
     transactions = []
     default_currency = parse_statement_currency(html_content)
+    statement_currency = normalize_currency(default_currency)
     logger.debug(f"Detected statement currency: {default_currency}")
     
     try:
@@ -738,7 +802,8 @@ def parse_maib_html(html_content):
                 # [5] Suma in valuta tranzactiei (amount in original currency)
                 # [6] Suma in valuta contului (amount in account currency) - THIS IS THE AMOUNT WE WANT
                 
-                # Extract date - format: "DD-MM-YYYY"
+                # Extract dates - format: "DD-MM-YYYY"
+                registration_date_raw = cell_texts[0].strip()
                 transaction_date_raw = cell_texts[1].strip()
                 
                 # Skip if no date
@@ -783,23 +848,20 @@ def parse_maib_html(html_content):
                 elif original_amount_raw:
                     is_negative = original_amount_raw.strip().endswith('-')
 
-                date = _normalize_date(transaction_date_raw)
-                if not date:
+                transaction_date = _normalize_date(transaction_date_raw)
+                processing_date = _normalize_date(registration_date_raw) or transaction_date
+                if not transaction_date:
                     logger.debug(f"Skipping invalid MAIB date row: {transaction_date_raw}")
                     continue
 
-                # Allow any currency code, even if exchange rates are unavailable.
-                # We still attempt MDL conversion when possible.
-                if currency == 'MDL':
-                    amount_mdl = account_amount if account_amount is not None else original_amount
-                else:
-                    if normalize_currency(default_currency) == 'MDL' and account_amount is not None:
-                        # Amount in account currency is already MDL if statement currency is MDL.
-                        amount_mdl = account_amount
-                    else:
-                        amount_mdl = original_amount if original_amount is not None else None
-                        if amount_mdl is not None:
-                            amount_mdl = convert_amount_to_mdl(date, currency, amount_mdl)
+                amount_for_conversion = original_amount if original_amount is not None else account_amount
+                amount_mdl = _resolve_amount_mdl(
+                    transaction_date,
+                    currency,
+                    amount_for_conversion,
+                    amount_in_account_currency=account_amount,
+                    account_currency=statement_currency
+                )
 
                 if amount_mdl is None:
                     logger.debug(f"No MDL amount determined for {shop} ({currency})")
@@ -813,22 +875,31 @@ def parse_maib_html(html_content):
 
                 # Build raw text with currency info
                 transaction = {
-                    "date": date,
+                    "date": transaction_date,
+                    "processing_date": processing_date,
                     "shop": shop,
                     "currency": currency,
                     "amount_original": amount_original,
                     "amount_mdl": amount_mdl,
                     "amount": amount_mdl,
-                    "raw_text": f"{date} - {shop} - {original_amount_raw} {currency} - {amount_mdl:.2f} MDL"
+                    "_flow": 'out' if is_negative else 'in',
+                    "raw_text": (
+                        f"TX:{transaction_date} PROC:{processing_date} - "
+                        f"{shop} - {original_amount_raw} {currency} - {amount_mdl:.2f} MDL"
+                    )
                 }
                 
                 transactions.append(transaction)
-                logger.debug(f"Parsed MAIB transaction: {date} | {shop} | {amount_mdl:.2f} MDL")
+                logger.debug(
+                    f"Parsed MAIB transaction: tx={transaction_date} proc={processing_date} "
+                    f"| {shop} | {amount_mdl:.2f} MDL"
+                )
                 
             except (IndexError, ValueError) as e:
                 logger.debug(f"Could not parse MAIB row: {str(e)}")
                 continue
         
+        transactions = _omit_card_verification_pairs(transactions)
         logger.info(f"✅ Successfully parsed {len(transactions)} transactions from MAIB HTML")
         return transactions
         
@@ -999,6 +1070,7 @@ def parse_transactions_from_html_templates(html_content):
         return []
 
     default_currency = parse_statement_currency(html_content)
+    statement_currency = normalize_currency(default_currency)
     soup = BeautifulSoup(html_content, 'html.parser')
     rows = [tr.get_text(separator=' ', strip=True) for tr in soup.find_all('tr') if tr.get_text(strip=True)]
 
@@ -1009,44 +1081,63 @@ def parse_transactions_from_html_templates(html_content):
                 for match in regex.finditer(row):
                     groups = match.groupdict()
                     raw_date = _extract_template_date(groups)
+                    raw_processing_date = groups.get('processing_date')
                     raw_shop = groups.get('shop')
                     raw_amount = groups.get('amount')
                     raw_currency = groups.get('currency')
                     raw_amount_mdl = groups.get('amount_mdl')
 
-                    date_value = _normalize_date(raw_date)
+                    transaction_date = _normalize_date(raw_date)
+                    processing_date = _normalize_date(raw_processing_date) or transaction_date
+                    date_value = transaction_date
                     shop = _normalize_shop(raw_shop)
                     currency = _normalize_currency_template(raw_currency, template.get('currency', 'MDL'), default_currency)
                     amount_value = _parse_amount_for_template(raw_amount)
-
                     amount_mdl_value = _parse_amount_for_template(raw_amount_mdl)
+                    amount_for_conversion = amount_value if amount_value is not None else amount_mdl_value
                     amount_mdl = _resolve_amount_mdl(
                         date_value,
                         currency,
-                        amount_value,
-                        amount_mdl_from_bank=amount_mdl_value
+                        amount_for_conversion,
+                        amount_in_account_currency=amount_mdl_value,
+                        account_currency=statement_currency
                     )
 
-                    if not date_value or not shop or amount_value is None:
+                    if not transaction_date or not processing_date or not shop or amount_for_conversion is None:
                         continue
                     if amount_mdl is None:
                         continue
                     if _should_filter_transaction(shop):
                         continue
 
+                    amount_original = amount_value if amount_value is not None else amount_for_conversion
+                    flow = 'out' if (amount_original is not None and amount_original < 0) else 'in'
+                    amount_original = abs(amount_original)
+                    amount_mdl = abs(amount_mdl)
+
+                    raw_text = (
+                        f"TX:{transaction_date} PROC:{processing_date} - "
+                        f"{shop} - {amount_original:.2f} {currency} -> {amount_mdl:.2f} MDL"
+                    )
+                    if 'comision' in shop.lower() or 'commission' in shop.lower():
+                        raw_text += " (commission)"
+
                     transaction = {
-                        'date': date_value,
+                        'date': transaction_date,
+                        'processing_date': processing_date,
                         'shop': shop,
                         'currency': currency,
-                        'amount_original': amount_value,
+                        'amount_original': amount_original,
                         'amount_mdl': amount_mdl,
                         'amount': amount_mdl,
-                        'raw_text': row
+                        '_flow': flow,
+                        'raw_text': raw_text
                     }
                     if validate_transaction(transaction):
                         transactions.append(transaction)
 
             if transactions:
+                transactions = _omit_card_verification_pairs(transactions)
                 logger.info(f"✅ Parsed {len(transactions)} HTML transactions using template '{template.get('name')}'")
                 return transactions
         except re.error as e:
@@ -1078,6 +1169,75 @@ def _should_filter_transaction(shop_name):
         if keyword and keyword.lower() in shop_name_lower:
             return True
     return False
+
+
+def _is_card_verification_merchant(shop_name):
+    """Heuristic for card authorization/test merchants (e.g. PP*2792CODE)."""
+    if not shop_name:
+        return False
+
+    normalized = re.sub(r'\s+', '', shop_name.upper())
+    patterns = [
+        r'^PP\*?\d+CODE$',
+        r'^PP\*?\d+$',
+        r'.*CARDVERIFICATION.*',
+        r'.*AUTHORIZATIONTEST.*',
+    ]
+    return any(re.match(pattern, normalized) for pattern in patterns)
+
+
+def _strip_internal_fields(transaction):
+    """Remove parser-only helper fields before returning to callers."""
+    if '_flow' in transaction:
+        transaction = dict(transaction)
+        transaction.pop('_flow', None)
+    return transaction
+
+
+def _omit_card_verification_pairs(transactions):
+    """
+    Remove synthetic card verification pairs:
+    same date + same shop + same amount + opposite flow (out/in).
+
+    This keeps real spend/income but omits authorization-hold + release pairs.
+    """
+    if not transactions:
+        return transactions
+
+    grouped = {}
+    for idx, tx in enumerate(transactions):
+        shop = tx.get('shop')
+        if not _is_card_verification_merchant(shop):
+            continue
+
+        amount_original = tx.get('amount_original')
+        amount_key = abs(float(amount_original if amount_original is not None else tx.get('amount', 0)))
+        key = (
+            tx.get('date'),
+            (shop or '').upper().strip(),
+            tx.get('currency', 'MDL'),
+            round(amount_key, 2),
+        )
+        grouped.setdefault(key, []).append((idx, tx.get('_flow')))
+
+    indexes_to_remove = set()
+    for key, entries in grouped.items():
+        has_out = any(flow == 'out' for _, flow in entries)
+        has_in = any(flow == 'in' for _, flow in entries)
+        if has_out and has_in:
+            for idx, _ in entries:
+                indexes_to_remove.add(idx)
+            logger.info(
+                f"Filtered card verification pair: date={key[0]} shop={key[1]} "
+                f"currency={key[2]} amount={key[3]:.2f}"
+            )
+
+    if not indexes_to_remove:
+        return [_strip_internal_fields(tx) for tx in transactions]
+
+    filtered = [tx for i, tx in enumerate(transactions) if i not in indexes_to_remove]
+    logger.info(f"✅ Removed {len(indexes_to_remove)} card verification test transaction(s)")
+    return [_strip_internal_fields(tx) for tx in filtered]
 
 def validate_transaction(transaction):
     """

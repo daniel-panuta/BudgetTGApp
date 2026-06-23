@@ -19,30 +19,15 @@ CREATE DATABASE budget_app;
 # Connect to the new database
 \c budget_app
 
-# Run the schema script
-\i sql/create_schema.sql
-
-# Add some initial categories (example)
-INSERT INTO categories (name, type) VALUES 
-  ('Groceries', 'expense'),
-  ('Transport', 'expense'),
-  ('Entertainment', 'expense'),
-  ('Salary', 'income'),
-  ('Other', 'expense');
-
-# Add salary day configuration
-INSERT INTO salary_days (year, month, salary_date) VALUES
-  (2026, 5, '2026-05-14'),
-  (2026, 6, '2026-06-12');
+# Run the unified schema script (creates all tables from scratch)
+\i sql/schema.sql
 ```
 
-### Updating an existing database
-
-If you already have an existing schema, run the migration script:
-
-```bash
-psql -U postgres -d budget_app -f sql/alter_schema.sql
-```
+The `sql/schema.sql` script will:
+- Drop existing tables if they exist (for fresh deployment)
+- Create all necessary tables with proper constraints
+- Create indexes for query optimization
+- Populate default categories and salary day example
 
 ## 2. Setup Python Environment
 
@@ -91,68 +76,60 @@ Displays monthly analysis of transactions broken down by:
 - **Income** by category (with count and total)
 - Summary (total income, expenses, net)
 
-### Upload PDF
-Send a maib bank statement PDF file:
+### Upload PDF/HTML
+Send a bank statement file (MAIB PDF or Victoriabank HTML):
 1. Bot extracts transactions
 2. Shows preview of extracted data
 3. Presents **✅ Approve & Save** or **❌ Reject** buttons
 4. If approved:
-   - Checks for duplicates (date + shop + amount)
-   - Creates shops if they don't exist
-   - Assigns default categories
-   - Saves to database
-5. Returns summary with inserted count and any duplicates skipped
+   - Creates audit_insert record to track file import
+   - Checks for duplicates using 4-level detection:
+     1. Exact raw_text match
+     2. Same import + same date + shop + amount
+     3. Any import + same date + shop + amount
+     4. Any import + same shop + amount within ±5 days
+   - Creates/finds shops and applies default category
+   - Inserts transactions with full audit trail
 
 ## Database Schema
 
-### categories
-- `id`: Auto-increment ID
-- `name`: Category name (UNIQUE)
-- `type`: 'income' or 'expense'
+### Tables
 
-### shops
-- `id`: Auto-increment ID
-- `name`: Shop name (UNIQUE)
-- `default_category_id`: FK to categories (auto-assigned on first transaction)
+**categories** - Transaction categories (income/expense)
+**shops** - Merchant names with deduplication and default category
+**salary_days** - Payroll cycle dates for financial analysis
+**audit_inserts** - Import log (filename, type, timestamp)
+**transactions** - Transaction records with full audit trail
 
-### transactions
-- `id`: Auto-increment ID
-- `date`: Transaction date (YYYY-MM-DD)
-- `shop_id`: FK to shops
-- `category_id`: FK to categories
-- `amount`: Transaction amount in MDL
-- `raw_text`: Original line from PDF (for debugging)
+Each transaction stores:
+- Date, shop, and amount
+- Currency conversion info
+- Raw PDF/HTML line for debugging
+- Link to import source file
 
-## Features
+## Duplicate Detection
 
-✅ **PDF Parsing**: Extracts date, shop, amount from maib statements
-✅ **Preview & Approval**: Shows data before saving to DB
-✅ **Duplicate Detection**: Skips transactions with same date + shop + amount
-✅ **Auto-shop Creation**: Creates new shops if not in database
-✅ **Category Assignment**: Uses shop's default category or first expense category
-✅ **Monthly Analysis**: Breakdown by categories with income/expense split
-✅ **Smart Filtering**: Ignores P2P and A2A transfers
+The system uses 4-level duplicate detection to prevent importing:
+1. **Exact matches**: Same raw_text line
+2. **Same import duplicates**: Same file + date + shop + amount
+3. **Same-day duplicates**: Different files but same date + shop + amount
+4. **Window duplicates**: Same shop + amount within ±5 days
+
+This prevents overlapping statement imports while allowing legitimate repeat purchases.
 
 ## Troubleshooting
 
-### "Database connection failed"
-- Check if PostgreSQL is running
-- Verify .env credentials
-- Check if database exists
+### Database connection failed
+- Verify PostgreSQL is running
+- Check `.env` credentials
+- Ensure `budget_app` database exists
 
-### "No categories found"
-- Run the INSERT statement in step 1 to add categories
-- At least one 'expense' category is needed
+### Schema errors
+- If migrating from old schema, backup data first
+- Run `\d` in psql to check existing tables
+- Run `schema.sql` on fresh database
 
-### "PDF parsing failed"
-- Ensure PDF is from maib bank
-- Check if regex pattern matches your statement format
-
-## Future Enhancements
-
-- [ ] Manual category assignment during approval
-- [ ] Shop-to-category mapping UI
-- [ ] Monthly budget limits and alerts
-- [ ] Export to CSV
-- [ ] Custom date range analysis
-- [ ] Category-specific trends
+### Duplicate warnings
+- Check `audit_inserts` table to see import history
+- View `transactions.raw_text` to see source line
+- Verify no overlapping statement date ranges

@@ -2,6 +2,7 @@
 Database module - all CRUD operations and database interactions
 """
 import logging
+import re
 from datetime import date, timedelta
 
 import psycopg2
@@ -10,6 +11,17 @@ import psycopg2.extras
 from .config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_SSLMODE, DB_USER
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_text(value):
+    """Remove replacement/control characters and normalize whitespace."""
+    if value is None:
+        return ""
+    text = str(value)
+    text = text.replace('\ufffd', ' ')
+    text = re.sub(r'[\x00-\x1f\x7f]', ' ', text)
+    text = ' '.join(text.split())
+    return text
 
 # ============================================================================
 # CONNECTION MANAGEMENT
@@ -109,10 +121,9 @@ def normalize_shop_name(shop_name):
         "KAUFLAND-NR1_SRL" → "KAUFLAND NR1 SRL"
         "MEGA@STORE_2" → "MEGASTORE 2"
     """
-    import re
-
     # Normalize whitespace and punctuation
-    normalized = shop_name.replace('_', ' ')
+    normalized = sanitize_text(shop_name)
+    normalized = normalized.replace('_', ' ')
     normalized = normalized.replace('.', ' ')
     normalized = normalized.replace('/', ' ')
     normalized = normalized.replace('|', ' ')
@@ -233,13 +244,30 @@ def get_shop_id_smart(conn, shop_name):
         
         # 4. No confident match found, create new shop with normalized name
         # New shops default to category ID 1 when available.
+        # Respect runtime DB limit (handles environments not yet migrated from VARCHAR(100)).
+        cursor.execute(
+            """
+            SELECT character_maximum_length
+            FROM information_schema.columns
+            WHERE table_name = 'shops' AND column_name = 'name'
+            """
+        )
+        limit_row = cursor.fetchone()
+        max_len = limit_row[0] if limit_row and limit_row[0] else 255
+        insert_name = normalized_name[:max_len]
+
+        if insert_name != normalized_name:
+            logger.warning(
+                f"⚠️ Shop name truncated to {max_len} chars for DB insert: {insert_name}"
+            )
+
         cursor.execute(
             "INSERT INTO shops (name, default_category_id) VALUES (%s, (SELECT id FROM categories WHERE id = 1)) RETURNING id",
-            (normalized_name,)
+            (insert_name,)
         )
         shop_id = cursor.fetchone()[0]
         conn.commit()
-        logger.info(f"✅ Created new shop: {normalized_name} (original: {shop_name}) (ID: {shop_id})")
+        logger.info(f"✅ Created new shop: {insert_name} (original: {shop_name}) (ID: {shop_id})")
         return shop_id
         
     except Exception as e:
@@ -395,7 +423,8 @@ def get_analysis_for_period(conn, start_date, end_date):
                 COUNT(t.id) as transaction_count,
                 SUM(t.amount) as total_amount
             FROM transactions t
-            JOIN categories c ON t.category_id = c.id
+            JOIN shops s ON t.shop_id = s.id
+            JOIN categories c ON s.default_category_id = c.id
             WHERE t.date >= %s
             AND t.date <= %s
             GROUP BY c.id, c.name, c.type
@@ -408,50 +437,206 @@ def get_analysis_for_period(conn, start_date, end_date):
         return []
 
 # ============================================================================
-# TRANSACTIONS CRUD
+# AUDIT INSERTS TRACKING
 # ============================================================================
 
-def check_duplicate_transaction(conn, date, shop_name, amount, raw_text):
+def get_or_create_audit_insert(conn, filename, file_extension):
     """
-    Check if transaction already exists using multiple methods:
-    1. (date + shop + amount) - for similar transactions
-    2. raw_text - for exact PDF line duplicates
+    Get or create an audit_insert record for tracking which file a transaction came from.
     
     Args:
         conn: Database connection
-        date: Transaction date (YYYY-MM-DD)
-        shop_name: Shop name
-        amount: Transaction amount
-        raw_text: Original text from PDF
+        filename: Name of the uploaded file (e.g., 'Extras_06_2026.pdf')
+        file_extension: File extension - 'pdf' or 'html'
         
     Returns:
-        True if duplicate exists, False otherwise
+        audit_insert_id (int) or None if error
     """
     try:
         cursor = conn.cursor()
         
-        # Check 1: Exact duplicate by raw_text (most reliable)
+        # Try to find existing record
+        cursor.execute("""
+            SELECT id FROM audit_inserts 
+            WHERE filename = %s AND file_extension = %s
+        """, (filename, file_extension))
+        
+        result = cursor.fetchone()
+        if result:
+            return result[0]
+        
+        # Create new record
+        cursor.execute("""
+            INSERT INTO audit_inserts (filename, file_extension)
+            VALUES (%s, %s)
+            RETURNING id
+        """, (filename, file_extension))
+        
+        audit_insert_id = cursor.fetchone()[0]
+        conn.commit()
+        logger.info(f"✅ Created audit_insert record #{audit_insert_id} for {filename}")
+        return audit_insert_id
+        
+    except Exception as e:
+        logger.error(f"❌ Error creating audit_insert: {str(e)}")
+        return None
+
+# ============================================================================
+# TRANSACTIONS CRUD
+# ============================================================================
+
+def _transactions_has_processing_date(conn):
+    """Return True if transactions.processing_date exists in current DB schema."""
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'transactions'
+              AND column_name = 'processing_date'
+            LIMIT 1
+            """
+        )
+        return cursor.fetchone() is not None
+    except Exception:
+        return False
+
+def check_duplicate_transaction(conn, date, processing_date, shop_name, amount, audit_insert_id, raw_text):
+    """
+    Check if transaction already exists using multiple methods:
+    1. raw_text - exact match (most reliable for same import)
+    2. (audit_insert_id + date + processing_date + shop + amount) - exact duplicate from same import
+    3. (date + processing_date + shop + amount) - same transaction from any source
+    4. (shop + amount within ±5 days) - warning only, no block
+    
+    Args:
+        conn: Database connection
+        date: Transaction date (YYYY-MM-DD)
+        processing_date: Processing/registration date (YYYY-MM-DD), optional
+        shop_name: Shop name
+        amount: Transaction amount
+        audit_insert_id: ID from audit_inserts table (which file this came from)
+        raw_text: Original row from PDF/HTML
+        
+    Returns:
+        True if duplicate exists, False otherwise. Logs warnings for potential duplicates.
+    """
+    try:
+        cursor = conn.cursor()
+
+        # Check 0: Exact raw_text match (most reliable for duplicate detection)
         cursor.execute("""
             SELECT id FROM transactions 
             WHERE raw_text = %s
         """, (raw_text,))
-        
         if cursor.fetchone() is not None:
             logger.debug(f"⚠️ Exact duplicate found (by raw_text): {raw_text[:50]}...")
             return True
 
+        has_processing_date_col = _transactions_has_processing_date(conn)
+        effective_processing_date = processing_date or date
+
         # Try to resolve shop by name or commercial name without creating a new shop
         shop_id = find_shop_id(conn, shop_name)
         if shop_id:
-            cursor.execute("""
-                SELECT id FROM transactions 
-                WHERE date = %s 
-                AND amount = %s
-                AND shop_id = %s
-            """, (date, amount, shop_id))
+            # Check 1: Same import + same transaction date pair + shop + amount
+            if has_processing_date_col:
+                cursor.execute("""
+                    SELECT id FROM transactions 
+                    WHERE audit_insert_id = %s
+                    AND amount = %s
+                    AND shop_id = %s
+                    AND (
+                        (date = %s AND COALESCE(processing_date, date) = %s)
+                        OR (date = %s AND COALESCE(processing_date, date) = %s)
+                    )
+                """, (audit_insert_id, amount, shop_id, date, effective_processing_date, effective_processing_date, effective_processing_date))
+            else:
+                cursor.execute("""
+                    SELECT id FROM transactions 
+                    WHERE audit_insert_id = %s
+                    AND date = %s
+                    AND amount = %s
+                    AND shop_id = %s
+                """, (audit_insert_id, date, amount, shop_id))
             if cursor.fetchone() is not None:
-                logger.debug(f"⚠️ Similar duplicate found: {date} | {shop_name} | {amount}")
+                logger.debug(
+                    f"⚠️ Exact duplicate found (same import): "
+                    f"tx={date} proc={effective_processing_date} | {shop_name} | {amount}"
+                )
                 return True
+
+            # Check 2: Same transaction date pair + shop + amount (from any import)
+            if has_processing_date_col:
+                cursor.execute("""
+                    SELECT id FROM transactions 
+                    WHERE amount = %s
+                    AND shop_id = %s
+                    AND (
+                        (date = %s AND COALESCE(processing_date, date) = %s)
+                        OR (date = %s AND COALESCE(processing_date, date) = %s)
+                    )
+                """, (amount, shop_id, date, effective_processing_date, effective_processing_date, effective_processing_date))
+            else:
+                cursor.execute("""
+                    SELECT id FROM transactions 
+                    WHERE date = %s
+                    AND amount = %s
+                    AND shop_id = %s
+                """, (date, amount, shop_id))
+            if cursor.fetchone() is not None:
+                logger.debug(
+                    f"⚠️ Duplicate found (same tx/proc dates): "
+                    f"tx={date} proc={effective_processing_date} | {shop_name} | {amount}"
+                )
+                return True
+
+            # Check 3: Same shop + amount within ±5 days (warning only, no block)
+            from datetime import datetime, timedelta
+            try:
+                date_obj = datetime.strptime(date, '%Y-%m-%d').date()
+            except (ValueError, TypeError):
+                date_obj = None
+
+            if date_obj is None:
+                return False
+            
+            date_min = date_obj - timedelta(days=5)
+            date_max = date_obj + timedelta(days=5)
+            
+            if has_processing_date_col:
+                cursor.execute("""
+                    SELECT id, date, COALESCE(processing_date, date) as effective_processing_date
+                    FROM transactions 
+                    WHERE shop_id = %s 
+                    AND amount = %s
+                    AND date >= %s
+                    AND date <= %s
+                    AND date != %s
+                """, (shop_id, amount, date_min, date_max, date))
+            else:
+                cursor.execute("""
+                    SELECT id, date, date as effective_processing_date
+                    FROM transactions 
+                    WHERE shop_id = %s 
+                    AND amount = %s
+                    AND date >= %s
+                    AND date <= %s
+                    AND date != %s
+                """, (shop_id, amount, date_min, date_max, date))
+            
+            existing = cursor.fetchall()
+            if existing:
+                existing_date = existing[0][1]
+                existing_processing_date = existing[0][2]
+                logger.warning(
+                    f"⚠️ LIKELY DUPLICATE (shop+amount within ±5 days): "
+                    f"new=tx:{date} proc:{effective_processing_date} | "
+                    f"existing=tx:{existing_date} proc:{existing_processing_date} | "
+                    f"{shop_name} | {amount} MDL. Not auto-blocked."
+                )
+                return False
         
         return False
         
@@ -459,17 +644,18 @@ def check_duplicate_transaction(conn, date, shop_name, amount, raw_text):
         logger.error(f"❌ Error checking duplicate: {str(e)}")
         return False
 
-def insert_transaction(conn, date, shop_id, category_id, amount, raw_text, currency='MDL', amount_original=None, amount_mdl=None):
+def insert_transaction(conn, date, processing_date, shop_id, audit_insert_id, amount, raw_text, currency='MDL', amount_original=None, amount_mdl=None):
     """
     Insert transaction into database.
     
     Args:
         conn: Database connection
-        date: Transaction date
+        date: Transaction date (YYYY-MM-DD)
+        processing_date: Processing/registration date (YYYY-MM-DD), optional
         shop_id: Foreign key to shops
-        category_id: Foreign key to categories
+        audit_insert_id: Foreign key to audit_inserts (which file this came from)
         amount: Transaction amount in MDL
-        raw_text: Original text from PDF/HTML
+        raw_text: Original row from PDF/HTML
         currency: Original transaction currency code
         amount_original: Original amount in transaction currency
         amount_mdl: Converted amount in MDL
@@ -487,20 +673,37 @@ def insert_transaction(conn, date, shop_id, category_id, amount, raw_text, curre
             amount_mdl = abs(float(amount_mdl))
 
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO transactions (
-                date,
-                shop_id,
-                category_id,
-                amount,
-                currency,
-                amount_original,
-                amount_mdl,
-                raw_text
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            RETURNING id
-        """, (date, shop_id, category_id, amount, currency, amount_original, amount_mdl, raw_text))
+        if _transactions_has_processing_date(conn):
+            cursor.execute("""
+                INSERT INTO transactions (
+                    date,
+                    processing_date,
+                    shop_id,
+                    audit_insert_id,
+                    amount,
+                    currency,
+                    amount_original,
+                    amount_mdl,
+                    raw_text
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (date, processing_date, shop_id, audit_insert_id, amount, currency, amount_original, amount_mdl, raw_text))
+        else:
+            cursor.execute("""
+                INSERT INTO transactions (
+                    date,
+                    shop_id,
+                    audit_insert_id,
+                    amount,
+                    currency,
+                    amount_original,
+                    amount_mdl,
+                    raw_text
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (date, shop_id, audit_insert_id, amount, currency, amount_original, amount_mdl, raw_text))
         
         transaction_id = cursor.fetchone()[0]
         conn.commit()
@@ -562,7 +765,8 @@ def get_monthly_analysis(conn, year, month):
                 COUNT(t.id) as transaction_count,
                 SUM(t.amount) as total_amount
             FROM transactions t
-            JOIN categories c ON t.category_id = c.id
+            JOIN shops s ON t.shop_id = s.id
+            JOIN categories c ON s.default_category_id = c.id
             WHERE EXTRACT(YEAR FROM t.date) = %s
             AND EXTRACT(MONTH FROM t.date) = %s
             GROUP BY c.id, c.name, c.type
@@ -587,7 +791,8 @@ def get_yearly_analysis(conn, year):
                 c.type,
                 SUM(t.amount) as total_amount
             FROM transactions t
-            JOIN categories c ON t.category_id = c.id
+            JOIN shops s ON t.shop_id = s.id
+            JOIN categories c ON s.default_category_id = c.id
             WHERE EXTRACT(YEAR FROM t.date) = %s
             GROUP BY EXTRACT(MONTH FROM t.date), c.type
             ORDER BY month, c.type DESC
@@ -606,7 +811,7 @@ def get_category_spending(conn, year, month, category_id):
             SELECT t.date, s.name, t.amount
             FROM transactions t
             JOIN shops s ON t.shop_id = s.id
-            WHERE t.category_id = %s
+            WHERE s.default_category_id = %s
             AND EXTRACT(YEAR FROM t.date) = %s
             AND EXTRACT(MONTH FROM t.date) = %s
             ORDER BY t.date DESC

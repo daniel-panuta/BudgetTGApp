@@ -152,7 +152,7 @@ The bot will:
 
 ### shops
 - `id` SERIAL PRIMARY KEY
-- `name` VARCHAR(100) UNIQUE NOT NULL
+- `name` VARCHAR(255) UNIQUE NOT NULL
 - `default_category_id` INT REFERENCES categories(id) ON DELETE SET NULL
 
 ### transactions
