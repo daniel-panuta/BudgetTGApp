@@ -13,8 +13,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler,
                           ContextTypes, MessageHandler, filters)
 
-from . import db, parser
-from .config import BOT_TOKEN, LOG_LEVEL, TEMP_PDF_FILENAME
+from backend.app.core.settings import BOT_TOKEN, LOG_LEVEL, TEMP_PDF_FILENAME
+from backend.app.repositories import db_repository as db
+from backend.app.services import parser_service as parser
 
 # Configure logging
 logging.basicConfig(

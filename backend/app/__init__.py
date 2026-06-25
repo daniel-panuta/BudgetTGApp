@@ -1,0 +1,1 @@
+"""BudgetApp backend package."""

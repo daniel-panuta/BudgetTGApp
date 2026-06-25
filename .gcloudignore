@@ -1,0 +1,14 @@
+.git
+.gitignore
+.gcloudignore
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.env
+extracts/
+tests/
+sql/examples/
+frontend/
