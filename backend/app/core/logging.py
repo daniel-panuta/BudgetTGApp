@@ -1,6 +1,6 @@
 import logging
 
-from .config import LOG_LEVEL
+from .settings import LOG_LEVEL
 
 
 def configure_logging() -> None:

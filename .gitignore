@@ -1,0 +1,12 @@
+.env
+.venv/
+extracts/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+frontend/miniapp/node_modules/
+frontend/miniapp/dist/
+frontend/miniapp/tsconfig.tsbuildinfo
+sql/examples/

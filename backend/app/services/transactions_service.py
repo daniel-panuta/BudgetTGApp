@@ -1,6 +1,6 @@
 """Transaction use-cases for the backend API."""
 
-from ..core.database import close_connection, get_db_connection
+from ..repositories.db_repository import close_connection, get_db_connection
 from ..repositories.transactions_repository import (get_transaction_summary,
                                                     list_recent_transactions)
 
