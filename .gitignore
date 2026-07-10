@@ -10,3 +10,5 @@ frontend/miniapp/node_modules/
 frontend/miniapp/dist/
 frontend/miniapp/tsconfig.tsbuildinfo
 sql/examples/
+.vercel
+.env*
