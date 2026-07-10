@@ -9,6 +9,7 @@ idna==3.18
 psycopg2-binary==2.9.12
 PyPDF2==3.0.1
 python-dotenv==1.2.2
+python-multipart==0.0.6
 python-telegram-bot==22.8
 uvicorn[standard]==0.30.6
 typing_extensions==4.15.0
