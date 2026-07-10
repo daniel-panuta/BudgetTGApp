@@ -1,10 +1,12 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, status
-from fastapi.responses import JSONResponse
 import logging
-import tempfile
 import os
-from ...services import parser_service
+import tempfile
+
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi.responses import JSONResponse
+
 from ...repositories import db_repository
+from ...services import parser_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,22 +30,18 @@ async def upload_statement(file: UploadFile = File(...)):
                 detail="File too large. Max 10MB"
             )
         
-        transactions = []
+        # Save to temp file - parse_file() needs a file path
+        # Use parse_file() like the bot does for better auto-detection and fallback
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.tmp') as tmp:
+            tmp.write(contents)
+            tmp_path = tmp.name
         
-        if file.content_type == 'application/pdf':
-            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
-                tmp.write(contents)
-                tmp_path = tmp.name
-            
-            try:
-                text = parser_service.extract_text_from_pdf(tmp_path)
-                if text:
-                    transactions = parser_service.parse_transactions_from_text(text)
-            finally:
+        try:
+            # parse_file() auto-detects type and has fallback (PDF → HTML if fails)
+            transactions = parser_service.parse_file(tmp_path)
+        finally:
+            if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
-        else:
-            html_str = contents.decode('utf-8', errors='ignore')
-            transactions = parser_service.parse_transactions_from_html(html_str)
         
         if not transactions:
             return JSONResponse({
